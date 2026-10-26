@@ -1,7 +1,7 @@
 {
-  "name": "koishi-plugin-waifu",
+  "name": "@forgetmelody/koishi-plugin-waifu",
   "description": "Marry with your groupmate",
-  "version": "1.10.2",
+  "version": "1.0.0",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -17,9 +17,12 @@
     "marry",
     "wife"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/idranme/koishi-plugin-waifu.git"
+    "url": "https://github.com/forgetmelodyXL/waifu.git"
   },
   "peerDependencies": {
     "koishi": "^4.17.7"
