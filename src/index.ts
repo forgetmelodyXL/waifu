@@ -34,7 +34,6 @@ export interface Config {
   divorce: boolean
   changeWaifu: boolean
   waifuQuery: boolean
-  qqKeyboardTemplate?: string
 }
 
 export const Config: Schema<Config> = Schema.intersect([
@@ -56,10 +55,7 @@ export const Config: Schema<Config> = Schema.intersect([
     divorce: Schema.boolean().description('是否启用离婚指令').default(false),
     changeWaifu: Schema.boolean().description('是否启用换老婆指令').experimental().default(false),
     waifuQuery: Schema.boolean().description('是否启用查老婆指令').experimental().default(false)
-  }).description('附加指令'),
-  Schema.object({
-    qqKeyboardTemplate: Schema.string().description('QQ 官方机器人按钮模板 ID。填写后按钮会嵌入 Markdown 卡片内；留空则使用自定义按钮（按钮会显示为独立气泡）。')
-  }).description('QQ 官方机器人')
+  }).description('附加指令')
 ])
 
 export function apply(ctx: Context, cfg: Config) {
@@ -80,45 +76,12 @@ export function apply(ctx: Context, cfg: Config) {
     return isQQ(session) ? `\n![avatar](${url})` : h.image(url)
   }
 
-  // 使用按钮模板时，直接调用 QQ API 发送，按钮才会嵌入 markdown 卡片内
-  async function sendWithTemplate(session: Session, source: string) {
-    const bot = session.bot as any
-    const s = session as any
-    const data: any = {
-      msg_type: 2,
-      markdown: { content: source || ' ' },
-      keyboard: { id: cfg.qqKeyboardTemplate },
-    }
-    // 5 分钟内优先作为被动回复，避免主动消息额度
-    const passive = Date.now() - s.timestamp < 5 * Time.minute
-    if (passive && s.messageId) {
-      s.seq = (s.seq || 0) + 1
-      data.msg_id = s.messageId
-      data.msg_seq = s.seq
-    } else if (passive && s.qq?.id) {
-      data.event_id = s.qq.id
-    }
-    if (s.isDirect) {
-      await bot.internal.sendPrivateMessage(s.channelId, data)
-    } else {
-      await bot.internal.sendMessage(s.channelId, data)
-    }
-  }
-
   // 发送 QQ 官方机器人 markdown 消息并附加按钮
+  // 按钮使用自定义键盘（keyboard.content.rows）内嵌在 Markdown 卡片中，无需申请按钮模板 ID
   async function reply(session: Session, content: string, buttons: h.Fragment[] = []): Promise<h.Fragment> {
     if (!isQQ(session)) return content
     // session.text() 会对文本做 XML 转义，markdown 中需要还原原生标签与链接
     const source = h.unescape(content).replace(/<br\s*\/?>/gi, '\n')
-    // 配置了按钮模板时按钮由 QQ 嵌入卡片内，需要绕过适配器自行发送
-    if (cfg.qqKeyboardTemplate && buttons.length && !session.isDirect) {
-      try {
-        await sendWithTemplate(session, source)
-        return ''
-      } catch (e) {
-        ctx.logger('waifu').warn(e)
-      }
-    }
     const children: h.Fragment[] = [h('qq:markdown', source)]
     if (buttons.length) children.push(h('button-group', ...buttons))
     return h('message', ...children)
