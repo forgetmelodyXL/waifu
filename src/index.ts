@@ -76,20 +76,80 @@ export function apply(ctx: Context, cfg: Config) {
     return isQQ(session) ? `\n![avatar](${url})` : h.image(url)
   }
 
+  // QQ 官方机器人自定义键盘按钮（keyboard.content.rows）
+  interface QQButton {
+    id?: string
+    render_data: { label: string; style?: number }
+    action: {
+      type: number
+      permission: { type: number }
+      data: string
+      enter?: boolean
+    }
+  }
+
+  // 直接调用 QQ API 发送带内嵌键盘的 Markdown 消息
+  // 图片必须写在 markdown 内容中，若使用 h.image() 会被适配器拆成独立的富媒体消息
+  async function sendQQMarkdown(session: Session, content: string, buttons: QQButton[]) {
+    const bot = session.bot as any
+    const s = session as any
+    const data: any = {
+      msg_type: 2,
+      markdown: { content: content || ' ' },
+      keyboard: { content: { rows: [{ buttons }] } },
+    }
+    // 5 分钟内优先作为被动回复，避免主动消息额度
+    const passive = Date.now() - s.timestamp < 5 * Time.minute
+    if (passive && s.messageId) {
+      s.seq = (s.seq || 0) + 1
+      data.msg_id = s.messageId
+      data.msg_seq = s.seq
+    } else if (passive && s.qq?.id) {
+      data.event_id = s.qq.id
+    }
+    if (s.isDirect) {
+      await bot.internal.sendPrivateMessage(s.channelId, data)
+    } else {
+      await bot.internal.sendMessage(s.channelId, data)
+    }
+  }
+
   // 发送 QQ 官方机器人 markdown 消息并附加按钮
   // 按钮使用自定义键盘（keyboard.content.rows）内嵌在 Markdown 卡片中，无需申请按钮模板 ID
-  async function reply(session: Session, content: string, buttons: h.Fragment[] = []): Promise<h.Fragment> {
+  async function reply(session: Session, content: string, buttons: QQButton[] = []): Promise<h.Fragment> {
     if (!isQQ(session)) return content
     // session.text() 会对文本做 XML 转义，markdown 中需要还原原生标签与链接
     const source = h.unescape(content).replace(/<br\s*\/?>/gi, '\n')
+    if (buttons.length) {
+      try {
+        await sendQQMarkdown(session, source, buttons)
+        return ''
+      } catch (e) {
+        ctx.logger('waifu').warn(e)
+      }
+    }
     const children: h.Fragment[] = [h('qq:markdown', source)]
-    if (buttons.length) children.push(h('button-group', ...buttons))
+    if (buttons.length) children.push(h('button-group', ...buttons.map(buttonElement)))
     return h('message', ...children)
   }
 
   // 点击后自动发送对应指令的输入按钮
-  function commandButton(command: string) {
-    return h('button', { type: 'input', text: command }, command)
+  function commandButton(command: string): QQButton {
+    return {
+      id: command,
+      render_data: { label: command, style: 1 },
+      action: { type: 2, permission: { type: 2 }, data: command, enter: true },
+    }
+  }
+
+  // 直接发送失败时退回适配器按钮元素
+  function buttonElement(button: QQButton) {
+    return h('button', {
+      id: button.id,
+      type: 'input',
+      text: button.action.data,
+      class: button.render_data.style === 1 ? 'primary' : undefined,
+    }, button.render_data.label)
   }
 
   function waifuButtons(session: Session) {
