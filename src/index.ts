@@ -34,6 +34,7 @@ export interface Config {
   divorce: boolean
   changeWaifu: boolean
   waifuQuery: boolean
+  qqKeyboardTemplate?: string
 }
 
 export const Config: Schema<Config> = Schema.intersect([
@@ -55,7 +56,10 @@ export const Config: Schema<Config> = Schema.intersect([
     divorce: Schema.boolean().description('是否启用离婚指令').default(false),
     changeWaifu: Schema.boolean().description('是否启用换老婆指令').experimental().default(false),
     waifuQuery: Schema.boolean().description('是否启用查老婆指令').experimental().default(false)
-  }).description('附加指令')
+  }).description('附加指令'),
+  Schema.object({
+    qqKeyboardTemplate: Schema.string().description('QQ 官方机器人按钮模板 ID。填写后按钮会嵌入 Markdown 卡片内；留空则使用自定义按钮（按钮会显示为独立气泡）。')
+  }).description('QQ 官方机器人')
 ])
 
 export function apply(ctx: Context, cfg: Config) {
@@ -76,13 +80,45 @@ export function apply(ctx: Context, cfg: Config) {
     return isQQ(session) ? `\n![avatar](${url})` : h.image(url)
   }
 
-  // 将消息包装为 QQ 官方机器人 markdown 消息，并附加按钮
-  function markdown(session: Session, content: h.Fragment, buttons: h.Fragment[] = []) {
+  // 使用按钮模板时，直接调用 QQ API 发送，按钮才会嵌入 markdown 卡片内
+  async function sendWithTemplate(session: Session, source: string) {
+    const bot = session.bot as any
+    const s = session as any
+    const data: any = {
+      msg_type: 2,
+      markdown: { content: source || ' ' },
+      keyboard: { id: cfg.qqKeyboardTemplate },
+    }
+    // 5 分钟内优先作为被动回复，避免主动消息额度
+    const passive = Date.now() - s.timestamp < 5 * Time.minute
+    if (passive && s.messageId) {
+      s.seq = (s.seq || 0) + 1
+      data.msg_id = s.messageId
+      data.msg_seq = s.seq
+    } else if (passive && s.qq?.id) {
+      data.event_id = s.qq.id
+    }
+    if (s.isDirect) {
+      await bot.internal.sendPrivateMessage(s.channelId, data)
+    } else {
+      await bot.internal.sendMessage(s.channelId, data)
+    }
+  }
+
+  // 发送 QQ 官方机器人 markdown 消息并附加按钮
+  async function reply(session: Session, content: string, buttons: h.Fragment[] = []): Promise<h.Fragment> {
     if (!isQQ(session)) return content
     // session.text() 会对文本做 XML 转义，markdown 中需要还原原生标签与链接
-    const source = typeof content === 'string'
-      ? h.unescape(content).replace(/<br\s*\/?>/gi, '\n')
-      : content
+    const source = h.unescape(content).replace(/<br\s*\/?>/gi, '\n')
+    // 配置了按钮模板时按钮由 QQ 嵌入卡片内，需要绕过适配器自行发送
+    if (cfg.qqKeyboardTemplate && buttons.length && !session.isDirect) {
+      try {
+        await sendWithTemplate(session, source)
+        return ''
+      } catch (e) {
+        ctx.logger('waifu').warn(e)
+      }
+    }
     const children: h.Fragment[] = [h('qq:markdown', source)]
     if (buttons.length) children.push(h('button-group', ...buttons))
     return h('message', ...children)
@@ -166,7 +202,7 @@ export function apply(ctx: Context, cfg: Config) {
       let times = await ctx.cache.get(`waifu_times_${gid}`, session.userId)
       if (cfg.changeWaifu) {
         if (times > cfg.maxTimes && cfg.maxTimes !== 0 && target === undefined) {
-          return markdown(session, session.text('.times-too-many', {
+          return reply(session, session.text('.times-too-many', {
             quote: mention(session)
           }), waifuButtons(session))
         }
@@ -195,7 +231,7 @@ export function apply(ctx: Context, cfg: Config) {
         }
         // 返回已有老婆
         const [name, avatar] = await getMemberInfo(selected, target, session.platform)
-        return markdown(session, session.text('.marriages', {
+        return reply(session, session.text('.marriages', {
           quote: mention(session),
           name,
           avatar: renderAvatar(session, avatar)
@@ -216,7 +252,7 @@ export function apply(ctx: Context, cfg: Config) {
         }
         list = list.filter(v => activeList.find(active => active === v.user.id))
       }
-      if (list.length === 0) return markdown(session, session.text('.members-too-few'), waifuButtons(session))
+      if (list.length === 0) return reply(session, session.text('.members-too-few'), waifuButtons(session))
 
       let selected = Random.pick(list)
       let selectedId = selected.user.id
@@ -236,7 +272,7 @@ export function apply(ctx: Context, cfg: Config) {
             break
           }
           i++
-          if (i > list.length) return markdown(session, session.text('.members-too-few'), waifuButtons(session))
+          if (i > list.length) return reply(session, session.text('.members-too-few'), waifuButtons(session))
         }
       }
       const maxAge = getMaxAge()
@@ -251,7 +287,7 @@ export function apply(ctx: Context, cfg: Config) {
       await ctx.cache.set(`waifu_times_${gid}`, session.userId, times+1, maxAge)
 
       const [name, avatar] = await getMemberInfo(selected, selectedId, session.platform)
-      return markdown(session, session.text('.marriages', {
+      return reply(session, session.text('.marriages', {
         quote: mention(session),
         name,
         avatar: renderAvatar(session, avatar)
@@ -266,7 +302,7 @@ export function apply(ctx: Context, cfg: Config) {
           return session.text('.members-too-few')
         }
         if (!target) {
-          return markdown(session, session.text('.no-target', {
+          return reply(session, session.text('.no-target', {
             quote: mention(session)
           }))
         }
@@ -277,7 +313,7 @@ export function apply(ctx: Context, cfg: Config) {
 
         const marriage = await ctx.cache.get(`waifu_marriages_${gid}`, session.userId)
         if (marriage) {
-          return markdown(session, session.text('.already-marriage', {
+          return reply(session, session.text('.already-marriage', {
             quote: mention(session)
           }))
         }
@@ -292,7 +328,7 @@ export function apply(ctx: Context, cfg: Config) {
         await ctx.cache.set(`waifu_marriages_${gid}`, selectedId, session.userId, maxAge)
 
         const [name, avatar] = await getMemberInfo(selected, selectedId, session.platform)
-        return markdown(session, session.text('.force-marry', {
+        return reply(session, session.text('.force-marry', {
           quote: mention(session),
           name,
           avatar: renderAvatar(session, avatar)
@@ -308,7 +344,7 @@ export function apply(ctx: Context, cfg: Config) {
           return session.text('.members-too-few')
         }
         if (!target) {
-          return markdown(session, session.text('.no-target', {
+          return reply(session, session.text('.no-target', {
             quote: mention(session)
           }))
         }
@@ -319,7 +355,7 @@ export function apply(ctx: Context, cfg: Config) {
 
         const marriage = await ctx.cache.get(`waifu_marriages_${gid}`, session.userId)
         if (marriage) {
-          return markdown(session, session.text('.already-marriage', {
+          return reply(session, session.text('.already-marriage', {
             quote: mention(session)
           }))
         }
@@ -332,16 +368,15 @@ export function apply(ctx: Context, cfg: Config) {
         const [name, avatar] = await getMemberInfo(selected, selectedId, session.platform)
 
 
-        await session.send(
-          markdown(session, session.text('.request', {
-            targetAt: mention(session, selectedId),
-            targetAvatar: renderAvatar(session, avatar),
-            name: session.username,
-            agree: '我愿意',
-            reject: '我拒绝',
-            time: '90'
-          }))
-        )
+        const request = await reply(session, session.text('.request', {
+          targetAt: mention(session, selectedId),
+          targetAvatar: renderAvatar(session, avatar),
+          name: session.username,
+          agree: '我愿意',
+          reject: '我拒绝',
+          time: '90'
+        }))
+        if (request) await session.send(request)
 
         let timeoutId: NodeJS.Timeout
         const sourceUserId = session.userId
@@ -350,36 +385,33 @@ export function apply(ctx: Context, cfg: Config) {
           .user(selected.user.id)
           .guild(session.guildId)
           .on('message-created', async ({ elements, text, send }) => {
-            const reply = h.select(elements, 'text').join('').trim()
-            if (reply === '我愿意') {
+            const content = h.select(elements, 'text').join('').trim()
+            if (content === '我愿意') {
               dispose()
               clearTimeout(timeoutId)
               const isMarriaged = await ctx.cache.get(`waifu_marriages_${gid}`, selectedId)
               if (isMarriaged) {
-                await send(
-                  markdown(session, text('commands.propose.messages.already-marriage2', {
-                    quote: mention(session, selectedId)
-                  }))
-                )
+                const output = await reply(session, text('commands.propose.messages.already-marriage2', {
+                  quote: mention(session, selectedId)
+                }))
+                if (output) await send(output)
                 return
               }
               const maxAge = getMaxAge()
               await ctx.cache.set(`waifu_marriages_${gid}`, sourceUserId, selectedId, maxAge)
               await ctx.cache.set(`waifu_marriages_${gid}`, selectedId, sourceUserId, maxAge)
-              await send(
-                markdown(session, text('commands.propose.messages.success', {
-                  quote: mention(session, sourceUserId),
-                  name
-                }))
-              )
-            } else if (reply === '我拒绝') {
+              const output = await reply(session, text('commands.propose.messages.success', {
+                quote: mention(session, sourceUserId),
+                name
+              }))
+              if (output) await send(output)
+            } else if (content === '我拒绝') {
               dispose()
               clearTimeout(timeoutId)
-              await send(
-                markdown(session, text('commands.propose.messages.failure', {
-                  quote: mention(session, sourceUserId)
-                }))
-              )
+              const output = await reply(session, text('commands.propose.messages.failure', {
+                quote: mention(session, sourceUserId)
+              }))
+              if (output) await send(output)
             }
           })
 
@@ -398,13 +430,13 @@ export function apply(ctx: Context, cfg: Config) {
 
         const marriage = await ctx.cache.get(`waifu_marriages_${gid}`, session.userId)
         if (!marriage) {
-          return markdown(session, session.text('.not-married', {
+          return reply(session, session.text('.not-married', {
             quote: mention(session)
           }), marryButton(session))
         } else {
           ctx.cache.delete(`waifu_marriages_${gid}`, marriage)
           ctx.cache.delete(`waifu_marriages_${gid}`, session.userId)
-          return markdown(session, session.text('.divorcement', {
+          return reply(session, session.text('.divorcement', {
             quote: mention(session)
           }), marryButton(session))
         }
@@ -427,7 +459,7 @@ export function apply(ctx: Context, cfg: Config) {
             ctx.cache.delete(`waifu_marriages_${gid}`, marriage)
             ctx.cache.delete(`waifu_marriages_${gid}`, session.userId)
           }
-          return markdown(session, session.text('.times-too-many', {
+          return reply(session, session.text('.times-too-many', {
             quote: mention(session)
           }), waifuButtons(session))
         } else if (!marriage || times === 0 || typeof times === 'undefined') {
@@ -437,7 +469,7 @@ export function apply(ctx: Context, cfg: Config) {
             times = await ctx.cache.get(`waifu_times_${gid}`, session.userId)
           }
           else {
-            return markdown(session, session.text('.not-married', {
+            return reply(session, session.text('.not-married', {
               quote: mention(session)
             }), waifuButtons(session))
           }
@@ -504,13 +536,13 @@ export function apply(ctx: Context, cfg: Config) {
 
         const [name2, avatar] = await getMemberInfo(selected, selectedId, session.platform)
         if (times === cfg.maxTimes && cfg.maxTimes !== 0) {
-          return markdown(session, session.text('.last-times', {
+          return reply(session, session.text('.last-times', {
             quote: mention(session),
             name: name2,
             avatar: renderAvatar(session, avatar)
           }), waifuButtons(session))
         } else if (times < cfg.maxTimes || cfg.maxTimes === 0) {
-          return markdown(session, session.text('.change-success', {
+          return reply(session, session.text('.change-success', {
             quote: mention(session),
             name: name2,
             avatar: renderAvatar(session, avatar)
@@ -554,7 +586,7 @@ export function apply(ctx: Context, cfg: Config) {
           } catch {
           }
           const [name, avatar] = await getMemberInfo(selected, target, session.platform)
-          return markdown(session, session.text('.marriages', {
+          return reply(session, session.text('.marriages', {
             quote: mention(session),
             name,
             avatar: renderAvatar(session, avatar)
