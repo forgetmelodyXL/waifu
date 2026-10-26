@@ -70,10 +70,33 @@ export function apply(ctx: Context, cfg: Config) {
     return `<qqbot-at-user id="${id}" /> `
   }
 
+  // QQ 头像统一调整为 100px，并显式声明宽高：移动端缺少宽高时只会显示 [avatar] 占位
+  function normalizeQQAvatar(url: string, size = 100) {
+    try {
+      const parsed = new URL(url)
+      if (!parsed.hostname.endsWith('qlogo.cn')) return url
+      if (parsed.searchParams.has('spec')) {
+        parsed.searchParams.set('spec', String(size))
+      } else if (parsed.searchParams.has('s')) {
+        parsed.searchParams.set('s', String(size))
+      } else {
+        const parts = parsed.pathname.split('/')
+        if (/^\d+$/.test(parts[parts.length - 1])) {
+          parts[parts.length - 1] = String(size)
+          parsed.pathname = parts.join('/')
+        }
+      }
+      return parsed.href
+    } catch {
+      return url
+    }
+  }
+
   // QQ markdown 使用 markdown 图片语法，其他平台使用 image 元素
   function renderAvatar(session: Session, url: string) {
     if (!url) return ''
-    return isQQ(session) ? `\n![avatar](${url})` : h.image(url)
+    if (!isQQ(session)) return h.image(url)
+    return `\n![avatar #100px #100px](${normalizeQQAvatar(url)})`
   }
 
   // QQ 官方机器人自定义键盘按钮（keyboard.content.rows）

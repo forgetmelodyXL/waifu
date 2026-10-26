@@ -31,6 +31,8 @@ npm install @forgetmelody/koishi-plugin-waifu
 
 消息中的按钮使用 QQ 官方机器人的自定义键盘（`keyboard.content.rows`），与 Markdown 正文、图片同属一条 `msg_type: 2` 消息，因此头像、文字与按钮会显示在同一张卡片内；无需在 [QQ 开放平台](https://q.qq.com/) 申请按钮模板 ID，按钮文字与指令也可根据配置动态生成。
 
+头像使用 Markdown 图片语法并显式声明宽高（统一为 100px），避免手机端因缺少宽高而把图片显示为 `[avatar]` 占位。
+
 私聊场景不会发送按钮，也不会 @ 用户。
 
 ## 致谢
